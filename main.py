@@ -1,10 +1,16 @@
 """Interface de linha de comando do controle financeiro."""
 
 from datetime import date, datetime
+from decimal import Decimal
 from pathlib import Path
 
-from gerenciador import GerenciadorFinanceiro
-from modelo import RECEITA, Transacao
+from gerenciador import (
+    ArquivoDeDadosInvalido,
+    ErroAoSalvar,
+    GerenciadorFinanceiro,
+    TransacaoNaoEncontrada,
+)
+from modelo import RECEITA, Transacao, para_decimal
 
 PASTA_BASE = Path(__file__).parent
 ARQUIVO_DADOS = PASTA_BASE / "dados" / "transacoes.json"
@@ -15,34 +21,40 @@ MENU = """
  1 - Adicionar receita
  2 - Adicionar despesa
  3 - Listar transações
- 4 - Mostrar saldo
- 5 - Filtrar por categoria
- 6 - Relatório mensal
- 7 - Exportar dados (CSV)
- 8 - Sair
+ 4 - Buscar transação por ID
+ 5 - Editar transação
+ 6 - Excluir transação
+ 7 - Mostrar saldo
+ 8 - Filtrar por categoria
+ 9 - Relatório mensal
+10 - Exportar dados (CSV)
+ 0 - Sair
 =========================================="""
 
 
 # Utilitários de formatação e entrada 
 
-def formatar_moeda(valor: float) -> str:
+def formatar_moeda(valor: Decimal) -> str:
     """Formata no padrão brasileiro: R$ 1.234,56"""
     texto = f"{abs(valor):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
     sinal = "-" if valor < 0 else ""
     return f"{sinal}R$ {texto}"
 
 
-def ler_valor(mensagem: str) -> float:
+def ler_valor(mensagem: str, obrigatorio: bool = True) -> Decimal | None:
+    """Lê um valor positivo. Se não for obrigatório, Enter vazio retorna None."""
     while True:
         entrada = input(mensagem).strip().replace("R$", "").replace(" ", "")
+        if not entrada and not obrigatorio:
+            return None
         # Aceita "1.234,56", "1234,56" e "1234.56"
         if "," in entrada:
             entrada = entrada.replace(".", "").replace(",", ".")
         try:
-            valor = float(entrada)
+            valor = para_decimal(entrada)
             if valor > 0:
                 return valor
-            print("  O valor deve ser maior que zero.")
+            print("  O valor deve ser maior que zero (mínimo R$ 0,01).")
         except ValueError:
             print("  Valor inválido. Exemplo: 150,90")
 
@@ -55,15 +67,34 @@ def ler_texto(mensagem: str, obrigatorio: bool = True) -> str:
         print("  Este campo é obrigatório.")
 
 
-def ler_data(mensagem: str) -> date:
+def ler_data(mensagem: str, padrao: date | None = None) -> date:
+    """Lê uma data DD/MM/AAAA. Enter vazio retorna o padrão (ou hoje)."""
     while True:
         entrada = input(mensagem).strip()
         if not entrada:
-            return date.today()
+            return padrao or date.today()
         try:
             return datetime.strptime(entrada, "%d/%m/%Y").date()
         except ValueError:
             print("  Data inválida. Use o formato DD/MM/AAAA.")
+
+
+def escolher_transacao(gerenciador: GerenciadorFinanceiro) -> Transacao | None:
+    """Pede um ID até achar a transação. Enter vazio cancela e retorna None."""
+    while True:
+        entrada = input("ID da transação [Enter = cancelar]: ").strip()
+        if not entrada:
+            return None
+        try:
+            return gerenciador.buscar(int(entrada))
+        except TransacaoNaoEncontrada as erro:
+            print(f"  {erro}")
+        except ValueError:
+            print("  ID inválido. Digite um número inteiro positivo, ex: 3")
+
+
+def confirmar(mensagem: str) -> bool:
+    return input(f"{mensagem} (s/n): ").strip().lower() in ("s", "sim")
 
 
 def ler_mes_ano() -> tuple[int, int]:
@@ -100,7 +131,7 @@ def imprimir_totais(totais: dict) -> None:
     print(f"  Saldo:    {formatar_moeda(totais['saldo']):>16}")
 
 
-#  Ações do menu 
+# Ações do menu 
 
 def adicionar_transacao(gerenciador: GerenciadorFinanceiro, tipo: str) -> None:
     print(f"\n--- Nova {tipo} ---")
@@ -116,6 +147,73 @@ def adicionar_transacao(gerenciador: GerenciadorFinanceiro, tipo: str) -> None:
 def listar_transacoes(gerenciador: GerenciadorFinanceiro) -> None:
     print("\n--- Transações ---")
     imprimir_transacoes(gerenciador.listar())
+
+
+def buscar_transacao(gerenciador: GerenciadorFinanceiro) -> None:
+    if not gerenciador.transacoes:
+        print("\nNenhuma transação cadastrada ainda.")
+        return
+
+    print("\n--- Buscar transação ---")
+    transacao = escolher_transacao(gerenciador)
+    if transacao is None:
+        print("\nBusca cancelada.")
+        return
+    imprimir_transacoes([transacao])
+
+
+def editar_transacao(gerenciador: GerenciadorFinanceiro) -> None:
+    if not gerenciador.transacoes:
+        print("\nNenhuma transação cadastrada ainda.")
+        return
+
+    print("\n--- Editar transação ---")
+    transacao = escolher_transacao(gerenciador)
+    if transacao is None:
+        print("\nEdição cancelada.")
+        return
+    imprimir_transacoes([transacao])
+
+    print("\nDigite o novo valor ou pressione Enter para manter o atual.")
+    descricao = ler_texto(f"Descrição [{transacao.descricao}]: ", obrigatorio=False)
+    valor = ler_valor(f"Valor [{formatar_moeda(transacao.valor)}]: ", obrigatorio=False)
+    categoria = ler_texto(f"Categoria [{transacao.categoria}]: ", obrigatorio=False)
+    data = ler_data(f"Data [{transacao.data:%d/%m/%Y}]: ", padrao=transacao.data)
+
+    antes = transacao.para_dict()
+    # Texto vazio vira None, que significa "manter o valor atual".
+    gerenciador.editar(
+        transacao.id,
+        descricao=descricao or None,
+        valor=valor,
+        categoria=categoria or None,
+        data=data,
+    )
+    if transacao.para_dict() == antes:
+        print("\nNenhuma alteração feita.")
+        return
+    print(f"\nTransação #{transacao.id} atualizada.")
+    imprimir_transacoes([transacao])
+
+
+def excluir_transacao(gerenciador: GerenciadorFinanceiro) -> None:
+    if not gerenciador.transacoes:
+        print("\nNenhuma transação cadastrada ainda.")
+        return
+
+    print("\n--- Excluir transação ---")
+    transacao = escolher_transacao(gerenciador)
+    if transacao is None:
+        print("\nExclusão cancelada.")
+        return
+    imprimir_transacoes([transacao])
+
+    if not confirmar("\nTem certeza que deseja excluir esta transação?"):
+        print("\nExclusão cancelada.")
+        return
+
+    gerenciador.excluir(transacao.id)
+    print(f"\nTransação #{transacao.id} excluída.")
 
 
 def mostrar_saldo(gerenciador: GerenciadorFinanceiro) -> None:
@@ -168,23 +266,32 @@ def exportar_dados(gerenciador: GerenciadorFinanceiro) -> None:
 #  Loop principal 
 
 def main() -> None:
-    gerenciador = GerenciadorFinanceiro(ARQUIVO_DADOS)
+    try:
+        gerenciador = GerenciadorFinanceiro(ARQUIVO_DADOS)
+    except ArquivoDeDadosInvalido as erro:
+        # Encerra sem salvar nada, para não sobrescrever os dados do usuário.
+        print(f"\nErro: {erro}")
+        print("Corrija ou restaure o arquivo de dados e abra o programa novamente.")
+        return
 
     acoes = {
         "1": lambda: adicionar_transacao(gerenciador, "receita"),
         "2": lambda: adicionar_transacao(gerenciador, "despesa"),
         "3": lambda: listar_transacoes(gerenciador),
-        "4": lambda: mostrar_saldo(gerenciador),
-        "5": lambda: filtrar_categoria(gerenciador),
-        "6": lambda: relatorio_mensal(gerenciador),
-        "7": lambda: exportar_dados(gerenciador),
+        "4": lambda: buscar_transacao(gerenciador),
+        "5": lambda: editar_transacao(gerenciador),
+        "6": lambda: excluir_transacao(gerenciador),
+        "7": lambda: mostrar_saldo(gerenciador),
+        "8": lambda: filtrar_categoria(gerenciador),
+        "9": lambda: relatorio_mensal(gerenciador),
+        "10": lambda: exportar_dados(gerenciador),
     }
 
     while True:
         print(MENU)
         opcao = input("Escolha uma opção: ").strip()
 
-        if opcao == "8":
+        if opcao == "0":
             print("\nAté logo!")
             break
 
@@ -195,7 +302,7 @@ def main() -> None:
 
         try:
             acao()
-        except ValueError as erro:
+        except (ValueError, ErroAoSalvar) as erro:
             print(f"\nErro: {erro}")
 
         input("\nPressione Enter para continuar...")
