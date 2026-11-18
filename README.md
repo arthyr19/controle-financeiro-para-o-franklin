@@ -98,6 +98,7 @@ controle_financeiro/
 ├── gerenciador.py       # Regras de negócio, validação, persistência JSON e exportação CSV
 ├── modelo.py            # Dataclass Transacao, conversão para Decimal e validação dos dados lidos do JSON
 ├── test_gerenciador.py  # Testes automatizados (unittest)
+├── test_main.py         # Testes da leitura de valores digitados no menu
 ├── dados/               # Criada automaticamente — banco de dados JSON
 └── exportacoes/         # Criada automaticamente — arquivos CSV exportados
 ```

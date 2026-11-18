@@ -1,5 +1,6 @@
 """Interface de linha de comando do controle financeiro."""
 
+import re
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -41,15 +42,27 @@ def formatar_moeda(valor: Decimal) -> str:
     return f"{sinal}R$ {texto}"
 
 
+def normalizar_valor(entrada: str) -> str:
+    """Converte o valor digitado para o formato do Decimal ("1234.56").
+
+    Aceita "1.234,56", "1234,56", "1234.56" e "1.500" (ponto como separador de milhar).
+    """
+    entrada = entrada.replace("R$", "").replace(" ", "")
+    if "," in entrada:
+        return entrada.replace(".", "").replace(",", ".")
+    # Sem vírgula, "1.500" e "1.234.567" são milhares (padrão brasileiro);
+    # já "10.5" e "1234.56" continuam sendo casas decimais.
+    if re.fullmatch(r"\d{1,3}(\.\d{3})+", entrada):
+        return entrada.replace(".", "")
+    return entrada
+
+
 def ler_valor(mensagem: str, obrigatorio: bool = True) -> Decimal | None:
     """Lê um valor positivo. Se não for obrigatório, Enter vazio retorna None."""
     while True:
-        entrada = input(mensagem).strip().replace("R$", "").replace(" ", "")
+        entrada = normalizar_valor(input(mensagem).strip())
         if not entrada and not obrigatorio:
             return None
-        # Aceita "1.234,56", "1234,56" e "1234.56"
-        if "," in entrada:
-            entrada = entrada.replace(".", "").replace(",", ".")
         try:
             valor = para_decimal(entrada)
             if valor > 0:
@@ -263,7 +276,7 @@ def exportar_dados(gerenciador: GerenciadorFinanceiro) -> None:
     print(f"\nDados exportados para: {caminho}")
 
 
-#  Loop principal 
+# Loop principal 
 
 def main() -> None:
     try:
@@ -292,13 +305,13 @@ def main() -> None:
         opcao = input("Escolha uma opção: ").strip()
 
         if opcao == "0":
-            print("\nAté logo!")
+            print("\nAte mais!")
             break
 
         acao = acoes.get(opcao)
         if acao is None:
             print("\nOpção inválida, tente novamente.")
-            continue
+            continue    
 
         try:
             acao()
